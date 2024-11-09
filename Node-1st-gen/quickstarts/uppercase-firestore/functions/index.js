@@ -1,72 +1,57 @@
-/**
- * Copyright 2017 Google Inc. All Rights Reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the 'License');
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an 'AS IS' BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-"use strict";
+exports.sendLikeNotification = functions.database
+    .ref("/Users/{userId}/Notes/{categoryKey}/{noteKey}/notificationLikeTrigger")
+    .onWrite(async (change, context) => {
+        const noteKey = context.params.noteKey;
+        const userId = context.params.userId;
+        const categoryKey = context.params.categoryKey;
 
-// [START all]
-// [START import]
-// The Cloud Functions for Firebase SDK to create Cloud Functions and set up triggers.
-const functions = require('firebase-functions/v1');
+        if (!change.after.exists()) return null;
 
-// The Firebase Admin SDK to access Firestore.
-const admin = require("firebase-admin");
-admin.initializeApp();
-// [END import]
+        const likeData = change.after.val();
+        const likeUserId = likeData.userID;
 
-// [START addMessage]
-// Take the text parameter passed to this HTTP endpoint and insert it into
-// Firestore under the path /messages/:documentId/original
-// [START addMessageTrigger]
-exports.addMessage = functions.https.onRequest(async (req, res) => {
-  // [END addMessageTrigger]
-  // Grab the text parameter.
-  const original = req.query.text;
-  // [START adminSdkAdd]
-  // Push the new message into Firestore using the Firebase Admin SDK.
-  const writeResult = await admin
-    .firestore()
-    .collection("messages")
-    .add({ original: original });
-  // Send back a message that we've successfully written the message
-  res.json({ result: `Message with ID: ${writeResult.id} added.` });
-  // [END adminSdkAdd]
-});
-// [END addMessage]
+        const noteSnap = await admin
+            .database()
+            .ref(`/Users/${userId}/Notes/${categoryKey}/${noteKey}`)
+            .once("value");
+        const noteOwnerId = noteSnap.val().userID;
 
-// [START makeUppercase]
-// Listens for new messages added to /messages/:documentId/original and creates an
-// uppercase version of the message to /messages/:documentId/uppercase
-// [START makeUppercaseTrigger]
-exports.makeUppercase = functions.firestore
-  .document("/messages/{documentId}")
-  .onCreate((snap, context) => {
-    // [END makeUppercaseTrigger]
-    // [START makeUppercaseBody]
-    // Grab the current value of what was written to Firestore.
-    const original = snap.data().original;
+        if (noteOwnerId === likeUserId) return null;
 
-    // Access the parameter `{documentId}` with `context.params`
-    functions.logger.log("Uppercasing", context.params.documentId, original);
+        const userSnap = await admin
+            .database()
+            .ref(`/Users/${noteOwnerId}/fcmToken`)
+            .once("value");
+        const fcmToken = userSnap.val();
 
-    const uppercase = original.toUpperCase();
+        if (!fcmToken) {
+            console.log("No FCM token found for user.");
+            return null;
+        }
 
-    // You must return a Promise when performing asynchronous tasks inside a Functions such as
-    // writing to Firestore.
-    // Setting an 'uppercase' field in Firestore document returns a Promise.
-    return snap.ref.set({ uppercase }, { merge: true });
-    // [END makeUppercaseBody]
-  });
-// [END makeUppercase]
-// [END all]
+        const likeUserSnap = await admin
+            .database()
+            .ref(`/Users/${likeUserId}`)
+            .once("value");
+        const likeUserName = likeUserSnap.val().username || "Someone";
+
+        const payload = {
+            notification: {
+                title: "New Like!",
+                body: `${likeUserName} liked your note.`,
+                sound: "default",
+            },
+        };
+
+        return admin
+            .messaging()
+            .sendToDevice(fcmToken, payload)
+            .then((response) => {
+                console.log("Successfully sent message:", response);
+                return null;
+            })
+            .catch((error) => {
+                console.error("Error sending message:", error);
+                return null;
+            });
+    });
